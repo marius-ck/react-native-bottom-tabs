@@ -219,69 +219,33 @@ struct TabViewImpl: View {
     }
   }
 
+  /// Configures the parts of the tab bar items that SwiftUI can't express.
+  ///
+  /// The unselected image is owned by SwiftUI through the tab label (see `TabBarItemImages.labelImage`),
+  /// so it's never assigned here. Assigning item images while the tab bar animates (e.g. minimizing or
+  /// switching tabs) breaks its selection styling on iOS 27, so `selectedImage` is only assigned when it
+  /// changes, and SwiftUI updates its images only when a label changes.
   private func configureTabBarItemImages(items: [UITabBarItem], props: TabViewProps) {
     for (tabBarIndex, item) in items.enumerated() {
-      guard let tabData = props.filteredItems[safe: tabBarIndex],
-        let itemIndex = props.items.firstIndex(where: { $0.key == tabData.key })
-      else { continue }
+      guard let tabData = props.filteredItems[safe: tabBarIndex] else { continue }
 
       let tabActiveColor = tabData.activeTintColor ?? props.activeTintColor
-      let assetIcon = props.icons[itemIndex]
-      let icon =
-        assetIcon
-        ?? makeSFSymbolImage(named: tabData.sfSymbol, options: tabData.sfSymbolOptions)
-      let focusedIcon =
-        props.focusedIcons[itemIndex]
-        ?? makeSFSymbolImage(
-          named: tabData.focusedSfSymbol,
-          options: tabData.focusedSfSymbolOptions
-        ) ?? icon
-      let preservesOriginalIconColors = preservesOriginalIconColors(tabData: tabData)
-      let useBakedTintColors = shouldUseExperimentalBakedTintColors(props: props)
-      let shouldRenderLabelIntoImage =
-        props.hasCustomTintColors && props.labeled && tabData.role != .search && icon != nil
+      let images = props.itemImages.images(for: tabData, props: props)
 
       item.accessibilityLabel = tabData.title
 
-      if useBakedTintColors, shouldRenderLabelIntoImage, let icon {
-        let selectedIcon = focusedIcon ?? icon
+      if let images {
+        assignSelectedImage(images.selectedImage, to: item)
+      }
+
+      if images?.rendersLabelIntoImage == true {
         item.title = ""
         item.titlePositionAdjustment = UIOffset(horizontal: 0, vertical: 100)
-        item.image = makeTabBarItemImage(
-          icon: icon,
-          title: tabData.title,
-          color: props.inactiveTintColor,
-          preservesOriginalIconColors: preservesOriginalIconColors,
-          props: props
-        )
-        item.selectedImage = makeTabBarItemImage(
-          icon: selectedIcon,
-          title: tabData.title,
-          color: tabActiveColor,
-          preservesOriginalIconColors: preservesOriginalIconColors,
-          props: props
-        )
         continue
       }
 
       item.title = props.labeled ? tabData.title : nil
       item.titlePositionAdjustment = UIOffset(horizontal: 0, vertical: 0)
-
-      if let icon {
-        let selectedIcon = focusedIcon ?? icon
-        item.image = renderTabBarIcon(
-          icon,
-          color: props.inactiveTintColor,
-          preservesOriginalIconColors: preservesOriginalIconColors,
-          forceTintColor: useBakedTintColors
-        )
-        item.selectedImage = renderTabBarIcon(
-          selectedIcon,
-          color: tabActiveColor,
-          preservesOriginalIconColors: preservesOriginalIconColors,
-          forceTintColor: useBakedTintColors
-        )
-      }
 
       item.setTitleTextAttributes(
         TabBarFontSize.createFontAttributes(
@@ -292,6 +256,158 @@ struct TabViewImpl: View {
         ),
         for: .selected
       )
+    }
+  }
+
+  private func assignSelectedImage(_ image: UIImage, to item: UITabBarItem) {
+    // `UITabBarItem.selectedImage` returns a copy, so compare against the last assigned instance instead.
+    let assignedImage = objc_getAssociatedObject(item, &AssociatedKeys.selectedImage) as? UIImage
+    guard assignedImage !== image else { return }
+
+    item.selectedImage = image
+    objc_setAssociatedObject(item, &AssociatedKeys.selectedImage, image, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+  }
+
+  private enum AssociatedKeys {
+    static var selectedImage: UInt8 = 0
+  }
+
+  struct TabBarItemImages {
+    /// Replaces the icon of the tab's SwiftUI label, or `nil` to keep the tab's own icon.
+    let labelImage: UIImage?
+    let selectedImage: UIImage
+    let rendersLabelIntoImage: Bool
+  }
+
+  final class TabBarItemImageCache {
+    private var entries: [String: (inputs: Inputs, images: TabBarItemImages?)] = [:]
+
+    func images(for tabData: TabInfo, props: TabViewProps) -> TabBarItemImages? {
+      guard let itemIndex = props.items.firstIndex(where: { $0.key == tabData.key }) else { return nil }
+
+      let assetIcon = props.icons[itemIndex]
+      let focusedAssetIcon = props.focusedIcons[itemIndex]
+      let useBakedTintColors = shouldUseExperimentalBakedTintColors(props: props)
+      let hasEffectiveRole: Bool
+      if #available(iOS 18, macOS 15, visionOS 2, tvOS 18, *) {
+        hasEffectiveRole = tabData.role?.convert() != nil
+      } else {
+        hasEffectiveRole = false
+      }
+      let inputs = Inputs(
+        icon: assetIcon.map(IconSource.image)
+          ?? .sfSymbol(tabData.sfSymbol, tabData.sfSymbolOptions),
+        focusedIcon: focusedAssetIcon.map(IconSource.image)
+          ?? tabData.focusedSfSymbol.map { .sfSymbol($0, tabData.focusedSfSymbolOptions) },
+        title: tabData.title,
+        inactiveTintColor: props.inactiveTintColor,
+        activeTintColor: tabData.activeTintColor ?? props.activeTintColor,
+        preservesOriginalIconColors: preservesOriginalIconColors(tabData: tabData),
+        useBakedTintColors: useBakedTintColors,
+        rendersLabelIntoImage: useBakedTintColors && props.hasCustomTintColors && props.labeled && !hasEffectiveRole,
+        fontSize: props.fontSize,
+        fontFamily: props.fontFamily,
+        fontWeight: props.fontWeight
+      )
+
+      if let entry = entries[tabData.key], entry.inputs == inputs {
+        return entry.images
+      }
+
+      let images = render(
+        icon: assetIcon
+          ?? makeSFSymbolImage(named: tabData.sfSymbol, options: tabData.sfSymbolOptions),
+        focusedIcon: focusedAssetIcon
+          ?? makeSFSymbolImage(
+            named: tabData.focusedSfSymbol,
+            options: tabData.focusedSfSymbolOptions
+          ),
+        inputs: inputs,
+        props: props
+      )
+      entries[tabData.key] = (inputs, images)
+      return images
+    }
+
+    private func render(
+      icon: UIImage?,
+      focusedIcon: UIImage?,
+      inputs: Inputs,
+      props: TabViewProps
+    ) -> TabBarItemImages? {
+      guard let icon else { return nil }
+      let selectedIcon = focusedIcon ?? icon
+
+      if inputs.rendersLabelIntoImage {
+        return TabBarItemImages(
+          labelImage: makeTabBarItemImage(
+            icon: icon,
+            title: inputs.title,
+            color: inputs.inactiveTintColor,
+            preservesOriginalIconColors: inputs.preservesOriginalIconColors,
+            props: props
+          ),
+          selectedImage: makeTabBarItemImage(
+            icon: selectedIcon,
+            title: inputs.title,
+            color: inputs.activeTintColor,
+            preservesOriginalIconColors: inputs.preservesOriginalIconColors,
+            props: props
+          ),
+          rendersLabelIntoImage: true
+        )
+      }
+
+      return TabBarItemImages(
+        // Without baked tint colors, the tab's own icon is already what the label shows.
+        labelImage: inputs.useBakedTintColors
+          ? renderTabBarIcon(
+            icon,
+            color: inputs.inactiveTintColor,
+            preservesOriginalIconColors: inputs.preservesOriginalIconColors,
+            forceTintColor: true
+          )
+          : nil,
+        selectedImage: renderTabBarIcon(
+          selectedIcon,
+          color: inputs.activeTintColor,
+          preservesOriginalIconColors: inputs.preservesOriginalIconColors,
+          forceTintColor: inputs.useBakedTintColors
+        ),
+        rendersLabelIntoImage: false
+      )
+    }
+
+    private enum IconSource: Equatable {
+      case image(UIImage)
+      case sfSymbol(String, SFSymbolOptions?)
+
+      static func == (lhs: IconSource, rhs: IconSource) -> Bool {
+        switch (lhs, rhs) {
+        case let (.image(lhs), .image(rhs)):
+          return lhs === rhs
+        case let (.sfSymbol(lhsName, lhsOptions), .sfSymbol(rhsName, rhsOptions)):
+          // A new `SFSymbolOptions` instance is built on every items update, so
+          // this compares by value to keep the cache from missing every time.
+          return lhsName == rhsName && lhsOptions == rhsOptions
+        default:
+          return false
+        }
+      }
+    }
+
+    private struct Inputs: Equatable {
+      let icon: IconSource
+      let focusedIcon: IconSource?
+      let title: String
+      let inactiveTintColor: UIColor?
+      let activeTintColor: UIColor?
+      let preservesOriginalIconColors: Bool
+      let useBakedTintColors: Bool
+      let rendersLabelIntoImage: Bool
+      let fontSize: Int?
+      let fontFamily: String?
+      let fontWeight: String?
     }
   }
 

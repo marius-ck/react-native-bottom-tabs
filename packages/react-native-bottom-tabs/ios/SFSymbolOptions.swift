@@ -66,6 +66,45 @@ public final class SFSymbolOptions: NSObject {
     variableValueMode = dictionary["variableValueMode"] as? String
     colorRenderingMode = dictionary["colorRenderingMode"] as? String
   }
+
+  /// Compares by value rather than by identity.
+  ///
+  /// A fresh instance is built every time the items prop updates, so identity
+  /// comparison would report a change on every render. The tab bar item image
+  /// cache uses this to tell a genuine configuration change from an identical
+  /// one, and reassigning item images that did not change breaks the tab bar's
+  /// selection styling while it animates.
+  public override func isEqual(_ object: Any?) -> Bool {
+    guard let other = object as? SFSymbolOptions else { return false }
+
+    return size == other.size
+      && weight == other.weight
+      && scale == other.scale
+      && color == other.color
+      && primaryColor == other.primaryColor
+      && secondaryColor == other.secondaryColor
+      && tertiaryColor == other.tertiaryColor
+      && renderingMode == other.renderingMode
+      && variableValue == other.variableValue
+      && variableValueMode == other.variableValueMode
+      && colorRenderingMode == other.colorRenderingMode
+  }
+
+  public override var hash: Int {
+    var hasher = Hasher()
+    hasher.combine(size)
+    hasher.combine(weight)
+    hasher.combine(scale)
+    hasher.combine(color)
+    hasher.combine(primaryColor)
+    hasher.combine(secondaryColor)
+    hasher.combine(tertiaryColor)
+    hasher.combine(renderingMode)
+    hasher.combine(variableValue)
+    hasher.combine(variableValueMode)
+    hasher.combine(colorRenderingMode)
+    return hasher.finalize()
+  }
 }
 
 extension SFSymbolOptions {

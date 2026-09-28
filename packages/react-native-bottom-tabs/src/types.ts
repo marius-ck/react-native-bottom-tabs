@@ -163,7 +163,7 @@ export type AppleIcon = {
   colorRenderingMode?: SFSymbolColorRenderingMode;
 };
 
-export type TabRole = 'search';
+export type TabRole = 'search' | 'prominent';
 
 export type IconRenderingMode = 'automatic' | 'original';
 
